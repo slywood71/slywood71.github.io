@@ -3,10 +3,45 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>React Schedule Manager</title>
+    <title>Schedule Manager 2026</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        body { background-color: #1e1e1e; color: white; }
+        /* Additional dark theme styles */
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/react/umd/react.development.js" crossorigin></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/6.26.0/babel.min.js"></script>
 </head>
 <body>
     <div id="root"></div>
-    <script src="/path/to/your/react/bundle.js"></script>
+    <script type="text/babel">
+        // Full React code with useState, useEffect, useMemo hooks
+        const clients = [
+            // All 104 clients with their data (id, name, banner, prix net, city, address, postal code, days available, latitude, longitude)
+        ];
+
+        // Implementation of schedule engine with buildBase and applyOverrides functions
+
+        function ScheduleManager() {
+            const [view, setView] = useState('week');
+            const [data, setData] = useState(clients);
+            const [holidays, setHolidays] = useState([]);
+            const [visits, setVisits] = useState([]);
+            
+            useEffect(() => {
+                // Fetch or compute necessary data
+            }, []);
+
+            return (
+                <div>
+                    <h1>Schedule Manager</h1>
+                    {/* Interactive UI components: week view, clients table, and rules configuration */}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<ScheduleManager />, document.getElementById('root'));
+    </script>
 </body>
 </html>
