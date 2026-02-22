@@ -4,42 +4,83 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Schedule Manager 2026</title>
-    <link rel="stylesheet" href="style.css">
     <style>
-        body { background-color: #1e1e1e; color: white; }
-        /* Additional dark theme styles */
+        body {
+            background-color: #121212;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        .sidebar {
+            width: 250px;
+            position: fixed;
+            height: 100%;
+            background-color: #1e1e1e;
+            padding: 20px;
+        }
+        .content {
+            margin-left: 270px;
+            padding: 20px;
+        }
+        .dark-theme {
+            background-color: #121212;
+        }
+        /* Add more styles as necessary */
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/react/umd/react.development.js" crossorigin></script>
-    <script src="https://cdn.jsdelivr.net/npm/react-dom/umd/react-dom.development.js" crossorigin></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/6.26.0/babel.min.js"></script>
 </head>
 <body>
     <div id="root"></div>
-    <script type="text/babel">
-        // Full React code with useState, useEffect, useMemo hooks
-        const clients = [
-            // All 104 clients with their data (id, name, banner, prix net, city, address, postal code, days available, latitude, longitude)
-        ];
+    <script src="https://cdn.jsdelivr.net/npm/react/umd/react.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom/umd/react-dom.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/babel-standalone/babel.min.js"></script>
+    <script>
+        // Sample Data for 104 Clients
+        const clients = Array.from({ length: 104 }, (v, k) => ({
+            id: k + 1,
+            name: `Client ${k + 1}`,
+            banner: `Banner ${k + 1}`,
+            price: Math.floor(Math.random() * 100 + 1),
+            city: `City ${Math.floor(Math.random() * 10)}`,
+            address: `Address ${k + 1}, City ${Math.floor(Math.random() * 10)}`,
+            postalCode: Math.floor(Math.random() * 90000 + 10000),
+            days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+            latitude: Math.random() * 180 - 90,
+            longitude: Math.random() * 360 - 180
+        }));
 
-        // Implementation of schedule engine with buildBase and applyOverrides functions
+        const ScheduleManager = () => {
+            const [searchTerm, setSearchTerm] = React.useState('');
 
-        function ScheduleManager() {
-            const [view, setView] = useState('week');
-            const [data, setData] = useState(clients);
-            const [holidays, setHolidays] = useState([]);
-            const [visits, setVisits] = useState([]);
-            
-            useEffect(() => {
-                // Fetch or compute necessary data
-            }, []);
+            const buildBase = () => {
+                // Logic for building base schedule
+            };
+
+            const applyOverrides = () => {
+                // Logic for applying rules/overrides to schedule
+            };
 
             return (
-                <div>
-                    <h1>Schedule Manager</h1>
-                    {/* Interactive UI components: week view, clients table, and rules configuration */}
+                <div className="content">
+                    <h1>Schedule Manager 2026</h1>
+                    {/* Placeholder for Sidebar and Clients Table */}
+                    <input 
+                        type="text" 
+                        placeholder="Search Clients" 
+                        value={searchTerm} 
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                    />
+                    <div>
+                        {clients.filter(client => client.name.toLowerCase().includes(searchTerm.toLowerCase())).map(client => (
+                            <div key={client.id}>
+                                <h2>{client.name}</h2>
+                                <p>Price: {client.price}$</p>
+                                <p>{client.city} - {client.address} - {client.postalCode}</p>
+                            </div>
+                        ))}
+                    </div>
+                    {/* Add more UI Components as per requirement */}
                 </div>
             );
-        }
+        };
 
         ReactDOM.render(<ScheduleManager />, document.getElementById('root'));
     </script>
