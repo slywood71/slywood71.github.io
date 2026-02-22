@@ -1,88 +1,59 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Client Schedule Manager</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #121212;
-            color: #ffffff;
-            margin: 0;
-            padding: 0;
-        }
-        .container {
-            padding: 20px;
-        }
-        input {
-            width: 100%;
-            padding: 10px;
-            margin-bottom: 20px;
-            border: none;
-            border-radius: 5px;
-            background-color: #333;
-            color: #fff;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th, td {
-            padding: 10px;
-            border: 1px solid #444;
-            text-align: left;
-        }
-        th {
-            background-color: #444;
-        }
-        tr:nth-child(even) {
-            background-color: #222;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Client Schedule Manager</h1>
-        <input type="text" id="search" placeholder="Search clients...">
-        <table id="clientTable">
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Appointment</th>
-                </tr>
-            </thead>
-            <tbody>
-                <!-- Client Data Rows Go Here -->
-            </tbody>
-        </table>
+import React, { useState, useEffect, useMemo } from 'react';
+
+const clients = [
+  // Add all 104 clients data here with appropriate fields
+];
+
+const ScheduleManager = () => {
+  const [visits, setVisits] = useState([]);
+  const [holidays, setHolidays] = useState(new Set());
+  const [cutoffDate, setCutoffDate] = useState('2026-02-22');
+  const [schedulingData, setSchedulingData] = useState({});
+
+  useEffect(() => {
+    // Fetch the actual visits data between Jan 5 - Feb 20 2026
+    fetchActualVisits();
+  }, []);
+
+  const fetchActualVisits = () => {
+    // Implementation to fetch visits goes here
+  };
+
+  const buildSchedule = () => {
+    // Implement the schedule building engine for Walmart, BEG, etc.
+  };
+
+  const addVisit = (visit) => {
+    // Implementation to add visit
+  };
+
+  const removeVisit = (visitId) => {
+    // Implementation to remove visit
+  };
+
+  // Other related functions and handlers go here
+
+  return (
+    <div className="app dark-theme">
+      <Sidebar />
+      <main>
+        <ScheduleTable visits={visits} />
+        <RulesPanel holidays={holidays} cutoffDate={cutoffDate} onCutoffChange={setCutoffDate} />
+      </main>
     </div>
-    <script>
-        const clients = Array.from({length: 104}, (_, i) => ({
-            name: `Client ${i + 1}`,
-            appointment: `Appointment ${i + 1}`
-        }));
+  );
+};
 
-        const clientTableBody = document.getElementById('clientTable').getElementsByTagName('tbody')[0];
+const Sidebar = () => {
+  return <div className="sidebar">Sidebar content goes here</div>;
+};
 
-        function displayClients(filteredClients) {
-            clientTableBody.innerHTML = '';
-            filteredClients.forEach(client => {
-                const row = clientTableBody.insertRow();
-                const nameCell = row.insertCell(0);
-                const appointmentCell = row.insertCell(1);
-                nameCell.textContent = client.name;
-                appointmentCell.textContent = client.appointment;
-            });
-        }
+const ScheduleTable = ({ visits }) => {
+  return <table>{/* Render the visits data here */}</table>;
+};
 
-        document.getElementById('search').addEventListener('input', function() {
-            const searchTerm = this.value.toLowerCase();
-            const filteredClients = clients.filter(client => client.name.toLowerCase().includes(searchTerm));
-            displayClients(filteredClients);
-        });
+const RulesPanel = ({ holidays, cutoffDate, onCutoffChange }) => {
+  return <div>{/* Rules panel components go here */}</div>;
+};
 
-        displayClients(clients); // Initially display all clients
-    </script>
-</body>
-</html>
+export default ScheduleManager;
