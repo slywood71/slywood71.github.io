@@ -54,6 +54,8 @@ function getWD(){const d=[],s=new Date(2026,0,5),e=new Date(2026,11,31),n=new Da
 const WD=getWD();
 const dk=d=>d.toISOString().slice(0,10);
 function hav(a,b,c,d){const R=6371,dl=(c-a)*Math.PI/180,dn=(d-b)*Math.PI/180,f=Math.sin(dl/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dn/2)**2;return R*2*Math.asin(Math.sqrt(f));}
+// Home base: 13 rue du Chevalier, Blainville J7C4R8
+const HOME={la:45.6711,lo:-73.8683};
 
 function buildBase(clients,{wmDays,biweekly,tiers,maxPD}){
   const cm={};clients.forEach(c=>{cm[c.id]=c;});
@@ -144,10 +146,38 @@ function clearRescueFor(swapDate,clientId,ov){
   return next;
 }
 
-function findRescueSlot(client,afterDate,currentSched,maxPD){
+function findRescueSlot(client,afterDate,currentSched,maxPD,clientMap){
+  // Geo-scored rescue: score each candidate day by distance between client and
+  // the centroid of clients already on that day. Lower score = better fit.
+  // Also penalise days further in the future (light penalty per day of delay).
   const allFuture=WD.filter(d=>dk(d)>afterDate&&dk(d)<="2026-12-31");
-  for(const d of allFuture){const k=dk(d),wd=DAYS[d.getDay()-1];if(client.d.length&&!client.d.includes(wd))continue;const cur=currentSched[k]||[];if(cur.includes(client.id))continue;if(cur.length<maxPD)return k;}
-  for(const d of allFuture){const k=dk(d),wd=DAYS[d.getDay()-1];if(client.d.length&&!client.d.includes(wd))continue;const cur=currentSched[k]||[];if(!cur.includes(client.id))return k;}
+  const cm=clientMap||{};
+  function dayCentroid(k){
+    const ids=(currentSched[k]||[]).filter(id=>id!==client.id);
+    if(!ids.length)return null;
+    const lats=ids.map(id=>cm[id]?.la||45.7),lons=ids.map(id=>cm[id]?.lo||-73.9);
+    return[lats.reduce((a,b)=>a+b)/lats.length,lons.reduce((a,b)=>a+b)/lons.length];
+  }
+  let best=null,bestScore=1e9;
+  allFuture.forEach((d,i)=>{
+    const k=dk(d),wd=DAYS[d.getDay()-1];
+    if(client.d.length&&!client.d.includes(wd))return;
+    const cur=currentSched[k]||[];
+    if(cur.includes(client.id))return;
+    if(cur.length>=maxPD)return;
+    const ct=dayCentroid(k);
+    const geo=ct?hav(client.la,client.lo,ct[0],ct[1]):0;
+    const delay=i*0.5;// small penalty per working day of delay
+    const score=geo+delay;
+    if(score<bestScore){bestScore=score;best=k;}
+  });
+  if(best)return best;
+  // Fallback: first available slot ignoring capacity
+  for(const d of allFuture){
+    const k=dk(d),wd=DAYS[d.getDay()-1];
+    if(client.d.length&&!client.d.includes(wd))continue;
+    if(!(currentSched[k]||[]).includes(client.id))return k;
+  }
   return null;
 }
 
@@ -238,7 +268,7 @@ function App(){
       // 3. Find rescue slot for displaced client (skip Walmart — fixed day, no reschedule)
       if(!displacedClient||displacedClient.b==="Wal-Mart") return next;
       const tentSched=applyOverrides(base,next);
-      const rescueDate=findRescueSlot(displacedClient,dk2,tentSched,maxPD);
+      const rescueDate=findRescueSlot(displacedClient,dk2,tentSched,maxPD,cm);
       if(!rescueDate) return next;
       // Check if their next base visit already covers it
       const nextBase=getClientDates(oldId,base).find(d=>d>dk2);
@@ -284,6 +314,36 @@ function App(){
     setOrderMap(p=>({...p,[dk2]:full}));
   }
   function clearOrder(dk2){setOrderMap(p=>{const n={...p};delete n[dk2];return n;});}
+
+  // Route sort: nearest-neighbour starting from furthest client, ending near HOME
+  // Strategy: pick the client farthest from HOME as stop #1, then greedily pick
+  // the nearest unvisited client each step, naturally converging back toward home.
+  function sortRoute(dk2){
+    const ids=(sched&&sched[dk2])||[];
+    if(ids.length<2)return;
+    const cs=ids.map(id=>cm[id]).filter(Boolean);
+    if(cs.length<2)return;
+    // Find the client farthest from home — that's our first stop
+    let startIdx=0,maxDist=0;
+    cs.forEach((c,i)=>{
+      const d=hav(HOME.la,HOME.lo,c.la,c.lo);
+      if(d>maxDist){maxDist=d;startIdx=i;}
+    });
+    // Nearest-neighbour from there
+    const remaining=[...cs];
+    const ordered=[];
+    ordered.push(remaining.splice(startIdx,1)[0]);
+    while(remaining.length){
+      const last=ordered[ordered.length-1];
+      let nearIdx=0,nearDist=1e9;
+      remaining.forEach((c,i)=>{
+        const d=hav(last.la,last.lo,c.la,c.lo);
+        if(d<nearDist){nearDist=d;nearIdx=i;}
+      });
+      ordered.push(remaining.splice(nearIdx,1)[0]);
+    }
+    setOrderMap(p=>({...p,[dk2]:ordered.map(c=>c.id)}));
+  }
 
   function clearDayOv(dk2){
     if(ACTUAL[dk2])return;
@@ -761,6 +821,7 @@ function App(){
                         </button>
                         <div style={{fontSize:10,color:slots>=maxPD?C.rd:C.mu,textAlign:"right"}}>
                           {slots}/{maxPD} slots{slots>maxPD&&" ⚠️"}
+                          {!isActual&&visits.length>1&&<span style={{color:"#22c55e",marginLeft:6,cursor:"pointer",textDecoration:"underline",fontWeight:600}} onClick={()=>sortRoute(key)}>🗺 sort route</span>}
                           {orderMap[key]&&<span style={{color:"#6366f1",marginLeft:6,cursor:"pointer",textDecoration:"underline"}} onClick={()=>clearOrder(key)}>reset order</span>}
                           {hasOv&&<span style={{color:C.am,marginLeft:6,cursor:"pointer",textDecoration:"underline"}} onClick={()=>clearDayOv(key)}>clear edits</span>}
                         </div>
