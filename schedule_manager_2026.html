@@ -470,6 +470,46 @@ function App(){
       weekRows.push([w.week,w.mon,w.visits,w.actual,w.generated]);
     });
 
+    // ── Sheet 4: Visits by Client (all visits grouped by client) ────────────
+    // Build a lookup: clientId → sorted list of {date, day, type}
+    const byClient={};
+    Object.keys(sched).sort().forEach(dateKey=>{
+      const ids=sched[dateKey];
+      if(!ids||!ids.length) return;
+      const d=new Date(dateKey+"T12:00:00");
+      const dayName=DAYS[d.getDay()-1];
+      const isActual=!!ACTUAL[dateKey];
+      const o=ov[dateKey]||{};
+      const swapNewIds=new Set(Object.values(o.swaps||{}));
+      const isRescueDest=!!(o._rescueFor);
+      ids.forEach(id=>{
+        if(!byClient[id]) byClient[id]=[];
+        const isAdded=(o.added||[]).includes(id);
+        const isSwappedIn=swapNewIds.has(id);
+        const type=isActual?"Actual":isAdded&&isRescueDest?"Rescheduled":isAdded?"Added":isSwappedIn?"Swapped In":"Generated";
+        byClient[id].push({dateKey,dayName,type});
+      });
+    });
+    // Build rows: for each client (sorted by prix net desc), write a header row + one row per visit
+    const byClientRows=[["Client","Banner","City","Prix Net ($)","Freq.","Total Visits","#","Date","Day","Type"]];
+    clients.slice().sort((a,b)=>b.p-a.p).forEach(c=>{
+      const visits=byClient[c.id]||[];
+      if(!visits.length) return;// skip clients with no visits
+      const bw=biweekly.has(c.n.toUpperCase());
+      const freq=c.b==="Wal-Mart"?"Weekly":c.b==="Bureau en Gros"?"Quarterly":bw?"Bi-weekly":`Every ${tiers.find(t=>c.p>=t.min)?.weeks||13}wks`;
+      visits.forEach((v,i)=>{
+        if(i===0){
+          // First row for this client: include all summary columns
+          byClientRows.push([c.n,c.b,c.c,Math.round(c.p),freq,visits.length,i+1,v.dateKey,v.dayName,v.type]);
+        } else {
+          // Subsequent rows: blank summary columns, just visit details
+          byClientRows.push(["","","","","","",i+1,v.dateKey,v.dayName,v.type]);
+        }
+      });
+      // Blank separator row between clients
+      byClientRows.push(["","","","","","","","","",""]);
+    });
+
     // ── Build workbook ───────────────────────────────────────────────────────
     const wb=XL.utils.book_new();
 
@@ -487,13 +527,37 @@ function App(){
       return ws;
     }
 
+    // For Visits by Client, also bold the client name rows (col A non-empty after row 0)
+    function makeByClientSheet(rows,colWidths=[]){
+      const ws=XL.utils.aoa_to_sheet(rows);
+      ws["!freeze"]={xSplit:0,ySplit:1};
+      if(colWidths.length) ws["!cols"]=colWidths.map(w=>({wch:w}));
+      const range=XL.utils.decode_range(ws["!ref"]);
+      for(let r=range.s.r;r<=range.e.r;r++){
+        const nameCell=ws[XL.utils.encode_cell({r,c:0})];
+        const isClientRow=r===0||(nameCell&&nameCell.v&&String(nameCell.v).length>0);
+        for(let c=range.s.c;c<=range.e.c;c++){
+          const ref=XL.utils.encode_cell({r,c});
+          if(!ws[ref]) continue;
+          if(r===0){
+            ws[ref].s={font:{bold:true,color:{rgb:"FFFFFF"}},fill:{fgColor:{rgb:"1E3A5F"}}};
+          } else if(isClientRow){
+            ws[ref].s={font:{bold:true},fill:{fgColor:{rgb:"0F2744"}}};
+          }
+        }
+      }
+      return ws;
+    }
+
     const ws1=makeSheet(schedRows,1,[12,12,16,36,16,20,13,14,20]);
     const ws2=makeSheet(summaryRows,1,[16,36,16,20,13,16,12,12,12]);
     const ws3=makeSheet(weekRows,1,[12,18,13,14,24]);
+    const ws4=makeByClientSheet(byClientRows,[36,16,20,13,10,12,5,12,11,13]);
 
     XL.utils.book_append_sheet(wb,ws1,"Full Schedule");
     XL.utils.book_append_sheet(wb,ws2,"Client Summary");
     XL.utils.book_append_sheet(wb,ws3,"Weekly Load");
+    XL.utils.book_append_sheet(wb,ws4,"Visits by Client");
 
     XL.writeFile(wb,`schedule-2026-${new Date().toISOString().slice(0,10)}.xlsx`);
   }
