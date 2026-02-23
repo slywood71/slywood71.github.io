@@ -124,10 +124,35 @@ function buildBase(clients,{wmDays,biweekly,tiers,maxPD}){
   return sc;
 }
 
+// ─── Smart reschedule helpers ─────────────────────────────────────────────────
+function getClientDates(clientId,base){return Object.entries(base).filter(([k,ids])=>ids.includes(clientId)).map(([k])=>k).sort();}
+
+function clearRescueFor(swapDate,clientId,ov){
+  const next={...ov};
+  for(const[k,o] of Object.entries(next)){
+    if(o._rescueFor&&o._rescueFor.swapDate===swapDate&&o._rescueFor.clientId===clientId){
+      const day={...o};
+      day.added=(day.added||[]).filter(id=>id!==clientId);
+      if(!day.added.length)delete day.added;
+      delete day._rescueFor;
+      if(!day.added&&!day.removed?.length&&!Object.keys(day.swaps||{}).length)delete next[k];
+      else next[k]=day;
+    }
+  }
+  return next;
+}
+
+function findRescueSlot(client,afterDate,currentSched,maxPD){
+  const allFuture=WD.filter(d=>dk(d)>afterDate&&dk(d)<="2026-12-31");
+  for(const d of allFuture){const k=dk(d),wd=DAYS[d.getDay()-1];if(client.d.length&&!client.d.includes(wd))continue;const cur=currentSched[k]||[];if(cur.includes(client.id))continue;if(cur.length<maxPD)return k;}
+  for(const d of allFuture){const k=dk(d),wd=DAYS[d.getDay()-1];if(client.d.length&&!client.d.includes(wd))continue;const cur=currentSched[k]||[];if(!cur.includes(client.id))return k;}
+  return null;
+}
+
 function applyOverrides(base,ov){
   const sc={};
   for(const[k,ids]of Object.entries(base)){
-    if(ACTUAL[k]){sc[k]=[...ids];continue;} // lock actual dates
+    if(ACTUAL[k]){sc[k]=[...ids];continue;}
     const o=ov[k]||{};
     let list=[...ids];
     for(const[old,nw]of Object.entries(o.swaps||{})){list=list.map(x=>x===old?nw:x);}
@@ -170,9 +195,111 @@ function App(){
   }
   function addV(dk2,id){ovSet(dk2,d=>{d.added=[...(d.added||[]).filter(x=>x!==id),id];d.removed=(d.removed||[]).filter(x=>x!==id);});}
   function remV(dk2,id){ovSet(dk2,d=>{if((d.added||[]).includes(id)){d.added=d.added.filter(x=>x!==id);}else if(Object.values(d.swaps||{}).includes(id)){const e=Object.entries(d.swaps||{}).find(([,v])=>v===id);if(e){const s={...d.swaps};delete s[e[0]];d.swaps=s;}}else{d.removed=[...(d.removed||[]).filter(x=>x!==id),id];}});}
-  function swapV(dk2,oldId,newId){ovSet(dk2,d=>{if((d.added||[]).includes(oldId)){d.added=d.added.map(x=>x===oldId?newId:x);}else{const s={...(d.swaps||{})};const ex=Object.entries(s).find(([,v])=>v===oldId);if(ex)s[ex[0]]=newId;else s[oldId]=newId;d.swaps=s;}});}
+
+  // Smart swap: record the swap AND auto-reschedule the displaced client
+  function smartSwap(dk2,oldId,newId){
+    if(!base) return;
+    const displacedClient=cm[oldId];
+    setOv(prev=>{
+      // 1. Clear any previous rescue slot for this swap
+      let next=clearRescueFor(dk2,oldId,prev);
+      // 2. Apply the swap itself
+      const day={...(next[dk2]||{})};
+      if((day.added||[]).includes(oldId)){
+        day.added=day.added.map(x=>x===oldId?newId:x);
+      } else {
+        const s={...(day.swaps||{})};
+        const ex=Object.entries(s).find(([,v])=>v===oldId);
+        if(ex)s[ex[0]]=newId; else s[oldId]=newId;
+        day.swaps=s;
+      }
+      if(!day.added?.length)delete day.added;
+      if(!Object.keys(day.swaps||{}).length)delete day.swaps;
+      next={...next,[dk2]:day};
+      // 3. Find rescue slot for displaced client (skip Walmart — fixed day, no reschedule)
+      if(!displacedClient||displacedClient.b==="Wal-Mart") return next;
+      const tentSched=applyOverrides(base,next);
+      const rescueDate=findRescueSlot(displacedClient,dk2,tentSched,maxPD);
+      if(!rescueDate) return next;
+      // Check if their next base visit already covers it
+      const nextBase=getClientDates(oldId,base).find(d=>d>dk2);
+      if(nextBase&&rescueDate>=nextBase) return next; // already covered by base schedule
+      // 4. Inject rescue visit as an "added" override with a _rescueFor marker
+      const rDay={...(next[rescueDate]||{})};
+      rDay.added=[...(rDay.added||[]).filter(x=>x!==oldId),oldId];
+      rDay._rescueFor={swapDate:dk2,clientId:oldId};
+      next={...next,[rescueDate]:rDay};
+      return next;
+    });
+  }
+
   function undoRem(dk2,id){ovSet(dk2,d=>{d.removed=(d.removed||[]).filter(x=>x!==id);});}
-  function clearDayOv(dk2){if(ACTUAL[dk2])return;setOv(p=>{const n={...p};delete n[dk2];return n;});}
+
+  // Undo a swap: remove swap + remove its rescue slot
+  function undoSwap(dk2,oldId){
+    setOv(prev=>{
+      let next=clearRescueFor(dk2,oldId,prev);
+      const day={...(next[dk2]||{})};
+      const s={...(day.swaps||{})};
+      delete s[oldId];
+      if(Object.keys(s).length)day.swaps=s; else delete day.swaps;
+      if(!day.added?.length&&!day.removed?.length&&!day.swaps) delete next[dk2];
+      else next={...next,[dk2]:day};
+      return next;
+    });
+  }
+
+  function clearDayOv(dk2){
+    if(ACTUAL[dk2])return;
+    setOv(prev=>{
+      let next={...prev};
+      for(const[k,o] of Object.entries(next)){
+        if(o._rescueFor&&o._rescueFor.swapDate===dk2){
+          const day={...o};
+          if(day._rescueFor) day.added=(day.added||[]).filter(id=>id!==o._rescueFor.clientId);
+          delete day._rescueFor;
+          if(!day.added?.length)delete day.added;
+          if(!day.added&&!day.removed?.length&&!Object.keys(day.swaps||{}).length)delete next[k];
+          else next[k]=day;
+        }
+      }
+      delete next[dk2];
+      return next;
+    });
+  }
+
+  // ── Save / Load overrides ──────────────────────────────────────────────────
+  function saveOverrides(){
+    const payload={version:1,savedAt:new Date().toISOString(),overrides:ov};
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=`schedule-overrides-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function loadOverrides(){
+    const input=document.createElement("input");
+    input.type="file";
+    input.accept=".json";
+    input.onchange=e=>{
+      const file=e.target.files[0];
+      if(!file)return;
+      const reader=new FileReader();
+      reader.onload=ev=>{
+        try{
+          const payload=JSON.parse(ev.target.result);
+          if(payload.version!==1||!payload.overrides) throw new Error("Invalid file");
+          setOv(payload.overrides);
+          alert(`✓ Loaded ${Object.keys(payload.overrides).length} override day(s) from ${payload.savedAt.slice(0,10)}`);
+        }catch(err){alert("Could not load file: "+err.message);}
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  }
 
   const weekDays=useMemo(()=>{
     if(!sched)return[];
@@ -186,11 +313,18 @@ function App(){
       const isActual=!!ACTUAL[key];
       const ids=sched[key]||[];
       const aSet=new Set(o.added||[]),swT=new Set(Object.values(o.swaps||{}));
+      // For swapped-in visits, find which original client they replaced
+      const swapOrigin={};Object.entries(o.swaps||{}).forEach(([origId,newId])=>{swapOrigin[newId]=origId;});
+      // Find rescue slots that came FROM this day's swaps
+      const rescueInfo={};// rescueInfo[clientId] = rescueDate for displaced clients
+      Object.entries(ov).forEach(([rk,ro])=>{if(ro._rescueFor&&ro._rescueFor.swapDate===key)rescueInfo[ro._rescueFor.clientId]=rk;});
+      // Is this day itself a rescue destination?
+      const isRescueDest=!!(o._rescueFor);
       return{d,key,dayName:DAYS[d.getDay()-1],label:d.toLocaleDateString('en-CA',{month:'short',day:'numeric'}),
-        visits:ids.map(id=>{const c=cm[id];return c?{...c,_a:aSet.has(id),_sw:swT.has(id)}:{id,n:id,b:"?",c:"",_unknown:true};}).filter(Boolean),
+        visits:ids.map(id=>{const c=cm[id];return c?{...c,_a:aSet.has(id),_sw:swT.has(id),_swOrigin:swapOrigin[id],_isRescue:isRescueDest&&(o.added||[]).includes(id)}:{id,n:id,b:"?",c:"",_unknown:true};}).filter(Boolean),
         removed:(o.removed||[]).map(id=>cm[id]).filter(Boolean),
         hasOv:!!(o.added?.length||o.removed?.length||Object.keys(o.swaps||{}).length),
-        slots:ids.length, isHoliday, isActual,
+        slots:ids.length, isHoliday, isActual, rescueInfo,
       };
     });
   },[sched,week,ov,cm]);
@@ -279,8 +413,18 @@ function App(){
             <div style={{fontSize:22,fontWeight:700,color:C.tx,letterSpacing:"-0.5px"}}>{view==="week"?"Week View":view==="clients"?"Clients":"Rules"}</div>
             <div style={{fontSize:12,color:C.mu,marginTop:3}}>{sched?`${clients.length} clients · ${tv.toLocaleString()} visits · ${Object.keys(ACTUAL).length} actual days locked`:"Loading…"}{tov>0&&<span style={{color:C.am,marginLeft:8}}>· {tov} override{tov!==1?"s":""}</span>}</div>
           </div>
-          <div style={{display:"flex",gap:8}}>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
             {tov>0&&<button onClick={()=>{if(window.confirm("Clear all manual overrides?"))setOv({});}} style={{...btn(C.s2,C.am,C.am+"44"),fontSize:12}}>✕ Clear overrides</button>}
+            <div style={{width:1,height:22,background:C.bd,margin:"0 2px"}}/>
+            <button onClick={loadOverrides} title="Load saved overrides from a .json file"
+              style={{...btn(C.s2,"#94a3b8",C.bd),fontSize:12,display:"flex",alignItems:"center",gap:5}}>
+              <span style={{fontSize:14}}>📂</span> Load
+            </button>
+            <button onClick={saveOverrides} disabled={tov===0} title={tov===0?"No overrides to save":"Save current overrides to a .json file"}
+              style={{...btn(tov>0?"#0ea5e9":C.s2,tov>0?"#fff":"#3d5068",tov>0?undefined:C.bd),fontSize:12,display:"flex",alignItems:"center",gap:5}}>
+              <span style={{fontSize:14}}>💾</span> Save overrides{tov>0?` (${tov})`:""}
+            </button>
+            <div style={{width:1,height:22,background:C.bd,margin:"0 2px"}}/>
             <button onClick={rebuild} disabled={building} style={btn(dirty?"#0ea5e9":C.s2,dirty?"#fff":C.mu)}>{building?"⟳ Building…":dirty?"↺ Rebuild":"✓ Ready"}</button>
           </div>
         </div>
@@ -297,7 +441,7 @@ function App(){
               <button onClick={()=>setWeek(w=>Math.min(52,w+1))} style={{...btn(C.s1,C.mu,C.bd),padding:"6px 14px"}}>›</button>
             </div>
             <div style={{display:"flex",gap:12}}>
-              {weekDays.map(({d,key,dayName,label,visits,removed,hasOv,slots,isHoliday,isActual})=>{
+              {weekDays.map(({d,key,dayName,label,visits,removed,hasOv,slots,isHoliday,isActual,rescueInfo})=>{
                 const locked=isActual;
                 let borderColor=C.bd;
                 if(isHoliday)borderColor=C.am+"66";
@@ -321,6 +465,9 @@ function App(){
 
                     {!isHoliday&&visits.map(c=>{
                       const col=c._unknown?"#64748b":bc(c.b);
+                      const origClient=c._swOrigin?cm[c._swOrigin]:null;
+                      const rescDate=c._swOrigin?rescueInfo?.[c._swOrigin]:null;
+                      const rescLabel=rescDate?new Date(rescDate+"T12:00:00").toLocaleDateString('en-CA',{month:'short',day:'numeric'}):null;
                       return(
                         <div key={c.id} style={{padding:"7px 9px",borderRadius:7,marginBottom:5,borderLeft:`3px solid ${col}`,background:c._a||c._sw?`${col}22`:`${col}0e`}}>
                           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:4}}>
@@ -330,18 +477,30 @@ function App(){
                             </div>
                             {!locked&&(
                               <div style={{display:"flex",gap:2,flexShrink:0}}>
-                                <button title="Swap client" onClick={()=>setModal({type:"swapVisit",dateKey:key,label:d.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric'}),oldId:c.id,search:""})}
-                                  style={{background:C.s2,border:"none",cursor:"pointer",color:"#94a3b8",padding:"2px 6px",borderRadius:4,fontSize:11,fontWeight:700}}>⇄</button>
-                                <button title="Remove visit" onClick={()=>remV(key,c.id)}
-                                  style={{background:C.rd+"18",border:"none",cursor:"pointer",color:C.rd,padding:"2px 6px",borderRadius:4,fontSize:11,fontWeight:700}}>×</button>
+                                {c._sw?(
+                                  <button title="Undo swap — restore original" onClick={()=>undoSwap(key,c._swOrigin)}
+                                    style={{background:C.am+"22",border:`1px solid ${C.am}44`,cursor:"pointer",color:C.am,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700}}>↩ undo</button>
+                                ):(
+                                  <button title="Swap client" onClick={()=>setModal({type:"swapVisit",dateKey:key,label:d.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric'}),oldId:c.id,search:""})}
+                                    style={{background:C.s2,border:"none",cursor:"pointer",color:"#94a3b8",padding:"2px 6px",borderRadius:4,fontSize:11,fontWeight:700}}>⇄</button>
+                                )}
+                                {!c._sw&&<button title="Remove visit" onClick={()=>remV(key,c.id)}
+                                  style={{background:C.rd+"18",border:"none",cursor:"pointer",color:C.rd,padding:"2px 6px",borderRadius:4,fontSize:11,fontWeight:700}}>×</button>}
                               </div>
                             )}
                           </div>
-                          <div style={{marginTop:4,display:"flex",gap:3,flexWrap:"wrap"}}>
+                          <div style={{marginTop:4,display:"flex",gap:3,flexWrap:"wrap",alignItems:"center"}}>
                             {!c._unknown&&<span style={tag(col)}>{c.b}</span>}
                             {isActual&&<span style={pill("#3b82f6")}>actual</span>}
-                            {c._a&&<span style={pill(C.gn)}>+ added</span>}
-                            {c._sw&&<span style={pill(C.am)}>⇄ swapped</span>}
+                            {c._a&&!c._isRescue&&<span style={pill(C.gn)}>+ added</span>}
+                            {c._isRescue&&<span style={pill("#a78bfa")}>↩ rescheduled</span>}
+                            {c._sw&&origClient&&(
+                              <span style={{fontSize:10,color:C.am,display:"flex",alignItems:"center",gap:3}}>
+                                <span style={pill(C.am)}>⇄ replaces {origClient.n.split(" ").slice(0,2).join(" ")}</span>
+                                {rescLabel&&<span style={{color:"#64748b"}}>→ {origClient.n.split(" ").slice(0,2).join(" ")} rescheduled {rescLabel}</span>}
+                              </span>
+                            )}
+                            {c._sw&&!origClient&&<span style={pill(C.am)}>⇄ swapped</span>}
                           </div>
                         </div>
                       );
@@ -546,7 +705,7 @@ function App(){
                 value={modal.search||""} onChange={e=>setModal(m=>({...m,search:e.target.value}))}/>
               {!modal.search?.trim()&&<div style={{fontSize:12,color:"#3d5068",fontStyle:"italic",padding:"6px 0"}}>Type to search…</div>}
               {modal.search?.trim()&&searchRes.length===0&&<div style={{fontSize:12,color:"#3d5068",fontStyle:"italic",padding:"6px 0"}}>No match</div>}
-              <div style={{maxHeight:300,overflowY:"auto"}}>{searchRes.map(c=><PickRow key={c.id} c={c} onClick={()=>{swapV(modal.dateKey,modal.oldId,c.id);setModal(null);}}/>)}</div>
+              <div style={{maxHeight:300,overflowY:"auto"}}>{searchRes.map(c=><PickRow key={c.id} c={c} onClick={()=>{smartSwap(modal.dateKey,modal.oldId,c.id);setModal(null);}}/>)}</div>
               <div style={{marginTop:14,paddingTop:12,borderTop:`1px solid ${C.bd}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <div style={{fontSize:11,color:"#3d5068"}}>Only this specific day is affected.</div>
                 <button onClick={()=>setModal(null)} style={btn(C.s2,C.mu,C.bd)}>Cancel</button>
