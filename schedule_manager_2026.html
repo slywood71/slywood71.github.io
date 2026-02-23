@@ -7,6 +7,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script>window.XLSX = XLSX;</script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body, #root { height: 100%; }
@@ -301,6 +303,106 @@ function App(){
     input.click();
   }
 
+  // ── Export to Excel ──────────────────────────────────────────────────────────
+  function exportExcel(){
+    if(!sched||!window.XLSX) return;
+    const XL=window.XLSX;
+
+    // ── Sheet 1: Full Schedule (one row per visit per day) ───────────────────
+    const schedRows=[["Date","Day","Client ID","Client Name","Banner","City","Prix Net ($)","Type","Notes"]];
+    Object.keys(sched).sort().forEach(dateKey=>{
+      const ids=sched[dateKey];
+      if(!ids||!ids.length) return;
+      const d=new Date(dateKey+"T12:00:00");
+      const dayName=DAYS[d.getDay()-1];
+      const isActual=!!ACTUAL[dateKey];
+      const o=ov[dateKey]||{};
+      const swapNewIds=new Set(Object.values(o.swaps||{}));
+      const isRescue=!!(o._rescueFor);
+      ids.forEach(id=>{
+        const c=cm[id];
+        const isAdded=(o.added||[]).includes(id);
+        const isSwappedIn=swapNewIds.has(id);
+        const type=isActual?"Actual":isAdded&&isRescue?"Rescheduled":isAdded?"Added":isSwappedIn?"Swapped In":"Generated";
+        schedRows.push([
+          dateKey, dayName,
+          id, c?c.n:id, c?c.b:"?", c?c.c:"",
+          c?Math.round(c.p):0,
+          type, ""
+        ]);
+      });
+    });
+
+    // ── Sheet 2: Client Summary (visits per client) ──────────────────────────
+    const summaryRows=[["Client ID","Client Name","Banner","City","Prix Net ($)","Frequency","Visits 2026","First Visit","Last Visit"]];
+    const clientVisits={};
+    Object.keys(sched).sort().forEach(dateKey=>{
+      (sched[dateKey]||[]).forEach(id=>{
+        if(!clientVisits[id]) clientVisits[id]={count:0,first:dateKey,last:dateKey};
+        clientVisits[id].count++;
+        if(dateKey<clientVisits[id].first) clientVisits[id].first=dateKey;
+        if(dateKey>clientVisits[id].last)  clientVisits[id].last=dateKey;
+      });
+    });
+    clients.slice().sort((a,b)=>b.p-a.p).forEach(c=>{
+      const v=clientVisits[c.id]||{count:0,first:"",last:""};
+      const bw=biweekly.has(c.n.toUpperCase());
+      const freq=c.b==="Wal-Mart"?"Weekly":c.b==="Bureau en Gros"?"Quarterly":bw?"Bi-weekly":`Every ${tiers.find(t=>c.p>=t.min)?.weeks||13} weeks`;
+      summaryRows.push([c.id,c.n,c.b,c.c,Math.round(c.p),freq,v.count,v.first,v.last]);
+    });
+
+    // ── Sheet 3: Weekly Load (visits per week) ───────────────────────────────
+    const weekMap={};
+    Object.keys(sched).sort().forEach(dateKey=>{
+      const d=new Date(dateKey+"T12:00:00");
+      // ISO week
+      const tmp=new Date(d); tmp.setHours(0,0,0,0); tmp.setDate(tmp.getDate()+3-(tmp.getDay()+6)%7);
+      const w1=new Date(tmp.getFullYear(),0,4);
+      const wn=1+Math.round(((tmp-w1)/86400000-3+(w1.getDay()+6)%7)/7);
+      const wk=`${d.getFullYear()}-W${String(wn).padStart(2,"0")}`;
+      if(!weekMap[wk]) weekMap[wk]={week:wk,mon:"",visits:0,actual:0,generated:0};
+      if(!weekMap[wk].mon){
+        // Monday of that week
+        const mon=new Date(d); mon.setDate(d.getDate()-((d.getDay()+6)%7));
+        weekMap[wk].mon=mon.toISOString().slice(0,10);
+      }
+      const cnt=(sched[dateKey]||[]).length;
+      weekMap[wk].visits+=cnt;
+      if(ACTUAL[dateKey]) weekMap[wk].actual+=cnt; else weekMap[wk].generated+=cnt;
+    });
+    const weekRows=[["Week","Week Starting (Mon)","Total Visits","Actual Visits","Generated/Overridden Visits"]];
+    Object.values(weekMap).sort((a,b)=>a.week.localeCompare(b.week)).forEach(w=>{
+      weekRows.push([w.week,w.mon,w.visits,w.actual,w.generated]);
+    });
+
+    // ── Build workbook ───────────────────────────────────────────────────────
+    const wb=XL.utils.book_new();
+
+    function makeSheet(rows,freezeRow=1,colWidths=[]){
+      const ws=XL.utils.aoa_to_sheet(rows);
+      ws["!freeze"]={xSplit:0,ySplit:freezeRow};
+      if(colWidths.length) ws["!cols"]=colWidths.map(w=>({wch:w}));
+      // Bold header row
+      const range=XL.utils.decode_range(ws["!ref"]);
+      for(let c=range.s.c;c<=range.e.c;c++){
+        const cellRef=XL.utils.encode_cell({r:0,c});
+        if(!ws[cellRef]) continue;
+        ws[cellRef].s={font:{bold:true},fill:{fgColor:{rgb:"1E3A5F"}},font:{bold:true,color:{rgb:"FFFFFF"}}};
+      }
+      return ws;
+    }
+
+    const ws1=makeSheet(schedRows,1,[12,12,16,36,16,20,13,14,20]);
+    const ws2=makeSheet(summaryRows,1,[16,36,16,20,13,16,12,12,12]);
+    const ws3=makeSheet(weekRows,1,[12,18,13,14,24]);
+
+    XL.utils.book_append_sheet(wb,ws1,"Full Schedule");
+    XL.utils.book_append_sheet(wb,ws2,"Client Summary");
+    XL.utils.book_append_sheet(wb,ws3,"Weekly Load");
+
+    XL.writeFile(wb,`schedule-2026-${new Date().toISOString().slice(0,10)}.xlsx`);
+  }
+
   const weekDays=useMemo(()=>{
     if(!sched)return[];
     const st=(week-1)*5;
@@ -423,6 +525,11 @@ function App(){
             <button onClick={saveOverrides} disabled={tov===0} title={tov===0?"No overrides to save":"Save current overrides to a .json file"}
               style={{...btn(tov>0?"#0ea5e9":C.s2,tov>0?"#fff":"#3d5068",tov>0?undefined:C.bd),fontSize:12,display:"flex",alignItems:"center",gap:5}}>
               <span style={{fontSize:14}}>💾</span> Save overrides{tov>0?` (${tov})`:""}
+            </button>
+            <div style={{width:1,height:22,background:C.bd,margin:"0 2px"}}/>
+            <button onClick={exportExcel} disabled={!sched} title="Export full schedule to Excel (.xlsx)"
+              style={{...btn(!sched?C.s2:"#166534",!sched?"#3d5068":"#bbf7d0",!sched?C.bd:undefined),fontSize:12,display:"flex",alignItems:"center",gap:5}}>
+              <span style={{fontSize:14}}>📊</span> Export Excel
             </button>
             <div style={{width:1,height:22,background:C.bd,margin:"0 2px"}}/>
             <button onClick={rebuild} disabled={building} style={btn(dirty?"#0ea5e9":C.s2,dirty?"#fff":C.mu)}>{building?"⟳ Building…":dirty?"↺ Rebuild":"✓ Ready"}</button>
