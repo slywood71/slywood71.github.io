@@ -173,6 +173,7 @@ function App(){
   const[maxPD,setMaxPD]=useState(4);
   const[base,setBase]=useState(null);
   const[ov,setOv]=useState({});
+  const[orderMap,setOrderMap]=useState({});// orderMap[dateKey] = [id, id, ...] explicit visit order
   const[building,setBuilding]=useState(false);
   const[dirty,setDirty]=useState(true);
   const[view,setView]=useState("week");
@@ -186,7 +187,23 @@ function App(){
   useEffect(()=>{rebuild();},[]);
   function rebuild(){setBuilding(true);setTimeout(()=>{setBase(buildBase(clients,{wmDays,biweekly,tiers,maxPD}));setBuilding(false);setDirty(false);},80);}
 
-  const sched=useMemo(()=>base?applyOverrides(base,ov):null,[base,ov]);
+  const sched=useMemo(()=>{
+    if(!base)return null;
+    const raw=applyOverrides(base,ov);
+    // Apply explicit ordering: for each date that has a custom order, reorder ids
+    if(Object.keys(orderMap).length===0)return raw;
+    const out={};
+    for(const[k,ids]of Object.entries(raw)){
+      const ord=orderMap[k];
+      if(!ord){out[k]=ids;continue;}
+      // Place ordered ids first (in order), then any extras not in order
+      const ordSet=new Set(ord);
+      const extras=ids.filter(id=>!ordSet.has(id));
+      const reordered=ord.filter(id=>ids.includes(id)).concat(extras);
+      out[k]=reordered;
+    }
+    return out;
+  },[base,ov,orderMap]);
   const vc=useMemo(()=>{if(!sched)return{};const v={};for(const ids of Object.values(sched))ids.forEach(id=>{v[id]=(v[id]||0)+1;});return v;},[sched]);
   const tv=useMemo(()=>Object.values(vc).reduce((a,b)=>a+b,0),[vc]);
   const tov=useMemo(()=>Object.values(ov).reduce((n,o)=>n+(o.added?.length||0)+(o.removed?.length||0)+Object.keys(o.swaps||{}).length,0),[ov]);
@@ -251,8 +268,26 @@ function App(){
     });
   }
 
+  // Visit ordering
+  function moveVisit(dk2, id, dir){
+    // dir: -1 = move up (earlier), +1 = move down (later)
+    const ids=(sched&&sched[dk2])||[];
+    const cur=orderMap[dk2]?[...orderMap[dk2]]:ids.filter(x=>ids.includes(x));
+    // Ensure all current ids are in cur
+    const curSet=new Set(cur);
+    const full=[...cur,...ids.filter(x=>!curSet.has(x))];
+    const idx=full.indexOf(id);
+    if(idx<0)return;
+    const newIdx=idx+dir;
+    if(newIdx<0||newIdx>=full.length)return;
+    [full[idx],full[newIdx]]=[full[newIdx],full[idx]];
+    setOrderMap(p=>({...p,[dk2]:full}));
+  }
+  function clearOrder(dk2){setOrderMap(p=>{const n={...p};delete n[dk2];return n;});}
+
   function clearDayOv(dk2){
     if(ACTUAL[dk2])return;
+    clearOrder(dk2);
     setOv(prev=>{
       let next={...prev};
       for(const[k,o] of Object.entries(next)){
@@ -472,10 +507,23 @@ function App(){
   const nav=[{id:"week",label:"Week View",icon:"📅"},{id:"clients",label:"Clients",icon:"🏪"},{id:"rules",label:"Rules",icon:"⚙️"}];
   const totalAllDays=52*5;
 
+  // ── Mobile detection ───────────────────────────────────────────────────────
+  const[isMobile,setIsMobile]=useState(()=>window.innerWidth<700);
+  useEffect(()=>{
+    const fn=()=>setIsMobile(window.innerWidth<700);
+    window.addEventListener("resize",fn);
+    return()=>window.removeEventListener("resize",fn);
+  },[]);
+  // On mobile week view: show one day at a time, navigate with arrows
+  const[mobileDay,setMobileDay]=useState(0);// index into weekDays (0-4)
+  // Reset mobileDay when week changes
+  useEffect(()=>{setMobileDay(0);},[week]);
+
   return(
     <div style={{fontFamily:"'DM Sans',system-ui,sans-serif",minHeight:"100vh",background:C.bg,color:C.tx}}>
 
-      {/* Sidebar */}
+      {/* ── DESKTOP SIDEBAR ── */}
+      {!isMobile&&(
       <div style={{width:220,background:C.s1,borderRight:`1px solid ${C.bd}`,display:"flex",flexDirection:"column",padding:"24px 0",position:"fixed",top:0,left:0,height:"100vh",zIndex:10}}>
         <div style={{padding:"0 20px 20px",borderBottom:`1px solid ${C.bd}`,marginBottom:12}}>
           <div style={{fontSize:17,fontWeight:700,color:C.tx,letterSpacing:"-0.5px"}}>Schedule Manager</div>
@@ -488,10 +536,9 @@ function App(){
           </div>
         );})}
         <div style={{flex:1}}/>
-        {/* Legend */}
         <div style={{padding:"0 20px",marginBottom:12}}>
           <div style={{fontSize:10,color:C.mu,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.5px"}}>Legend</div>
-          {[{col:"#3b82f6",label:"Actual visits (locked)"},{col:C.am,label:"Holidays / off weeks"},{col:C.gn,label:"Generated schedule"}].map(({col,label})=>(
+          {[{col:"#3b82f6",label:"Actual (locked)"},{col:C.am,label:"Holiday / off"},{col:C.gn,label:"Generated"}].map(({col,label})=>(
             <div key={label} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
               <div style={{width:10,height:10,borderRadius:2,background:col,flexShrink:0}}/>
               <span style={{fontSize:10,color:C.mu}}>{label}</span>
@@ -507,9 +554,37 @@ function App(){
           {tov>0&&<div style={{fontSize:11,color:C.am}}>{tov} override{tov!==1?"s":""} active</div>}
         </div>
       </div>
+      )}
+
+      {/* ── MOBILE TOP BAR ── */}
+      {isMobile&&(
+      <div style={{position:"fixed",top:0,left:0,right:0,zIndex:20,background:C.s1,borderBottom:`1px solid ${C.bd}`,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 16px",height:52}}>
+        <div style={{fontSize:15,fontWeight:700,color:C.tx,letterSpacing:"-0.3px"}}>📅 Schedule 2026</div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          {(dirty||building)&&<button onClick={rebuild} disabled={building} style={{...btn(dirty?"#0ea5e9":C.s2,dirty?"#fff":C.mu),padding:"5px 10px",fontSize:12}}>{building?"⟳":"↺"}</button>}
+          {tov>0&&<span style={pill(C.am)}>{tov}</span>}
+          <div style={{width:7,height:7,borderRadius:"50%",background:dirty?C.am:building?C.ac:C.gn}}/>
+        </div>
+      </div>
+      )}
+
+      {/* ── MOBILE BOTTOM NAV ── */}
+      {isMobile&&(
+      <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:20,background:C.s1,borderTop:`1px solid ${C.bd}`,display:"flex"}}>
+        {nav.map(n=>{const a=view===n.id;return(
+          <div key={n.id} onClick={()=>setView(n.id)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"8px 0",cursor:"pointer",color:a?C.ac:C.mu,borderTop:`2px solid ${a?C.ac:"transparent"}`}}>
+            <span style={{fontSize:20}}>{n.icon}</span>
+            <span style={{fontSize:10,fontWeight:a?700:400,marginTop:2}}>{n.label.split(" ")[0]}</span>
+            {n.id==="week"&&tov>0&&<span style={{...pill(C.am),position:"absolute",top:6,right:"calc(50% - 30px)",fontSize:9}}>{tov}</span>}
+          </div>
+        );})}
+      </div>
+      )}
 
       {/* Main */}
-      <div style={{marginLeft:220,padding:"28px 32px"}}>
+      <div style={{marginLeft:isMobile?0:220,padding:isMobile?"64px 12px 80px":"28px 32px"}}>
+        {/* Page header — hidden on mobile (top bar handles status) */}
+        {!isMobile&&(
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
           <div>
             <div style={{fontSize:22,fontWeight:700,color:C.tx,letterSpacing:"-0.5px"}}>{view==="week"?"Week View":view==="clients"?"Clients":"Rules"}</div>
@@ -535,20 +610,55 @@ function App(){
             <button onClick={rebuild} disabled={building} style={btn(dirty?"#0ea5e9":C.s2,dirty?"#fff":C.mu)}>{building?"⟳ Building…":dirty?"↺ Rebuild":"✓ Ready"}</button>
           </div>
         </div>
+        )}
+        {/* Mobile: compact section title */}
+        {isMobile&&(
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <div style={{fontSize:16,fontWeight:700,color:C.tx}}>{view==="week"?"Week View":view==="clients"?"Clients":"Rules & Config"}</div>
+          <div style={{display:"flex",gap:6}}>
+            <button onClick={loadOverrides} style={{...btn(C.s2,"#94a3b8",C.bd),padding:"5px 8px",fontSize:11}}>📂</button>
+            <button onClick={saveOverrides} disabled={tov===0} style={{...btn(tov>0?"#0ea5e9":C.s2,tov>0?"#fff":"#3d5068",tov>0?undefined:C.bd),padding:"5px 8px",fontSize:11}}>💾{tov>0?` ${tov}`:""}</button>
+            <button onClick={exportExcel} disabled={!sched} style={{...btn(!sched?C.s2:"#166534",!sched?"#3d5068":"#bbf7d0",!sched?C.bd:undefined),padding:"5px 8px",fontSize:11}}>📊</button>
+          </div>
+        </div>
+        )}
 
         {/* ── WEEK VIEW ── */}
         {view==="week"&&(
           <div>
-            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
-              <button onClick={()=>setWeek(w=>Math.max(1,w-1))} style={{...btn(C.s1,C.mu,C.bd),padding:"6px 14px"}}>‹</button>
-              <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:10,flex:1,padding:"10px 20px",textAlign:"center",fontSize:13}}>
-                <span style={{color:C.mu}}>Week </span><b>{week}</b><span style={{color:C.mu}}> of 52</span>
-                {weekDays[0]&&<span style={{color:C.mu,marginLeft:12}}>{weekDays[0].label} – {weekDays[4]?.label||""}</span>}
+            {/* Week navigator */}
+            <div style={{display:"flex",alignItems:"center",gap:isMobile?8:12,marginBottom:isMobile?10:20}}>
+              <button onClick={()=>setWeek(w=>Math.max(1,w-1))} style={{...btn(C.s1,C.mu,C.bd),padding:isMobile?"10px 16px":"6px 14px",fontSize:isMobile?18:14}}>‹</button>
+              <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:10,flex:1,padding:isMobile?"10px 12px":"10px 20px",textAlign:"center",fontSize:isMobile?12:13}}>
+                <span style={{color:C.mu}}>Week </span><b>{week}</b><span style={{color:C.mu}}> / 52</span>
+                {weekDays[0]&&<span style={{color:C.mu,marginLeft:8}}>{weekDays[0].label}–{weekDays[4]?.label||""}</span>}
               </div>
-              <button onClick={()=>setWeek(w=>Math.min(52,w+1))} style={{...btn(C.s1,C.mu,C.bd),padding:"6px 14px"}}>›</button>
+              <button onClick={()=>setWeek(w=>Math.min(52,w+1))} style={{...btn(C.s1,C.mu,C.bd),padding:isMobile?"10px 16px":"6px 14px",fontSize:isMobile?18:14}}>›</button>
             </div>
-            <div style={{display:"flex",gap:12}}>
-              {weekDays.map(({d,key,dayName,label,visits,removed,hasOv,slots,isHoliday,isActual,rescueInfo})=>{
+            {/* Mobile: day tab strip */}
+            {isMobile&&weekDays.length>0&&(
+            <div style={{display:"flex",gap:4,marginBottom:10,overflowX:"auto",paddingBottom:2}}>
+              {weekDays.map(({dayName,label,isHoliday,isActual,hasOv,visits},i)=>{
+                const active=mobileDay===i;
+                let tabCol=C.bd;
+                if(isHoliday)tabCol=C.am+"88";
+                else if(isActual)tabCol="#3b82f688";
+                else if(hasOv)tabCol=C.am+"88";
+                return(
+                  <div key={i} onClick={()=>setMobileDay(i)}
+                    style={{flexShrink:0,padding:"6px 10px",borderRadius:8,background:active?C.s2:C.bg,border:`1px solid ${active?tabCol:C.bd}`,cursor:"pointer",textAlign:"center",minWidth:52}}>
+                    <div style={{fontSize:10,fontWeight:700,color:active?(isHoliday?C.am:isActual?"#3b82f6":C.ac):"#64748b",textTransform:"uppercase"}}>{dayName.slice(0,3)}</div>
+                    <div style={{fontSize:10,color:"#475569"}}>{label}</div>
+                    {visits.length>0&&!isHoliday&&<div style={{fontSize:9,color:C.mu,marginTop:1}}>{visits.length} visit{visits.length!==1?"s":""}</div>}
+                    {isHoliday&&<div style={{fontSize:9,color:C.am,marginTop:1}}>off</div>}
+                  </div>
+                );
+              })}
+            </div>
+            )}
+            {/* Desktop: 5-col grid | Mobile: single day */}
+            <div style={{display:"flex",gap:12,flexDirection:isMobile?"column":"row"}}>
+              {(isMobile?weekDays.slice(mobileDay,mobileDay+1):weekDays).map(({d,key,dayName,label,visits,removed,hasOv,slots,isHoliday,isActual,rescueInfo})=>{
                 const locked=isActual;
                 let borderColor=C.bd;
                 if(isHoliday)borderColor=C.am+"66";
@@ -570,14 +680,30 @@ function App(){
 
                     {!isHoliday&&visits.length===0&&removed.length===0&&<div style={{fontSize:12,color:"#2a3a52",fontStyle:"italic"}}>No visits</div>}
 
-                    {!isHoliday&&visits.map(c=>{
+                    {!isHoliday&&visits.map((c,vi)=>{
                       const col=c._unknown?"#64748b":bc(c.b);
                       const origClient=c._swOrigin?cm[c._swOrigin]:null;
                       const rescDate=c._swOrigin?rescueInfo?.[c._swOrigin]:null;
                       const rescLabel=rescDate?new Date(rescDate+"T12:00:00").toLocaleDateString('en-CA',{month:'short',day:'numeric'}):null;
+                      const visitNum=vi+1;
+                      const isFirst=vi===0, isLast=vi===visits.length-1;
                       return(
                         <div key={c.id} style={{padding:"7px 9px",borderRadius:7,marginBottom:5,borderLeft:`3px solid ${col}`,background:c._a||c._sw?`${col}22`:`${col}0e`}}>
                           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:4}}>
+                            {/* Visit number + up/down arrows */}
+                            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:1,flexShrink:0,marginRight:4}}>
+                              <div style={{width:18,height:18,borderRadius:"50%",background:col+"33",border:`1px solid ${col}66`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,color:col}}>{visitNum}</div>
+                              {!locked&&visits.length>1&&(
+                                <div style={{display:"flex",flexDirection:"column",gap:1,marginTop:2}}>
+                                  <button onClick={()=>moveVisit(key,c.id,-1)} disabled={isFirst}
+                                    title="Move earlier in day"
+                                    style={{background:isFirst?"transparent":C.s2,border:`1px solid ${isFirst?"transparent":C.bd}`,borderRadius:3,cursor:isFirst?"default":"pointer",color:isFirst?"#2a3a52":"#94a3b8",padding:isMobile?"3px 7px":"0 4px",fontSize:isMobile?13:10,lineHeight:isMobile?"18px":"14px",fontWeight:700,minWidth:isMobile?28:undefined}}>▲</button>
+                                  <button onClick={()=>moveVisit(key,c.id,1)} disabled={isLast}
+                                    title="Move later in day"
+                                    style={{background:isLast?"transparent":C.s2,border:`1px solid ${isLast?"transparent":C.bd}`,borderRadius:3,cursor:isLast?"default":"pointer",color:isLast?"#2a3a52":"#94a3b8",padding:isMobile?"3px 7px":"0 4px",fontSize:isMobile?13:10,lineHeight:isMobile?"18px":"14px",fontWeight:700,minWidth:isMobile?28:undefined}}>▼</button>
+                                </div>
+                              )}
+                            </div>
                             <div style={{flex:1,minWidth:0}}>
                               <div style={{fontSize:11,fontWeight:600,color:C.tx,lineHeight:1.3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.n||c.id}</div>
                               <div style={{fontSize:10,color:C.mu,marginTop:1}}>{c.c||""}</div>
@@ -589,10 +715,10 @@ function App(){
                                     style={{background:C.am+"22",border:`1px solid ${C.am}44`,cursor:"pointer",color:C.am,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700}}>↩ undo</button>
                                 ):(
                                   <button title="Swap client" onClick={()=>setModal({type:"swapVisit",dateKey:key,label:d.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric'}),oldId:c.id,search:""})}
-                                    style={{background:C.s2,border:"none",cursor:"pointer",color:"#94a3b8",padding:"2px 6px",borderRadius:4,fontSize:11,fontWeight:700}}>⇄</button>
+                                    style={{background:C.s2,border:"none",cursor:"pointer",color:"#94a3b8",padding:isMobile?"6px 10px":"2px 6px",borderRadius:4,fontSize:isMobile?14:11,fontWeight:700}}>⇄</button>
                                 )}
                                 {!c._sw&&<button title="Remove visit" onClick={()=>remV(key,c.id)}
-                                  style={{background:C.rd+"18",border:"none",cursor:"pointer",color:C.rd,padding:"2px 6px",borderRadius:4,fontSize:11,fontWeight:700}}>×</button>}
+                                  style={{background:C.rd+"18",border:"none",cursor:"pointer",color:C.rd,padding:isMobile?"6px 10px":"2px 6px",borderRadius:4,fontSize:isMobile?14:11,fontWeight:700}}>×</button>}
                               </div>
                             )}
                           </div>
@@ -628,13 +754,14 @@ function App(){
                     {!isHoliday&&!locked&&(
                       <div style={{marginTop:"auto",paddingTop:8}}>
                         <button onClick={()=>setModal({type:"addVisit",dateKey:key,label:d.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric'}),search:""})}
-                          style={{width:"100%",padding:"6px",borderRadius:6,border:`1px dashed ${C.bd}`,background:"transparent",color:C.ac,cursor:"pointer",fontSize:12,transition:"all 0.15s",marginBottom:5}}
+                          style={{width:"100%",padding:isMobile?"12px 6px":"6px",borderRadius:6,border:`1px dashed ${C.bd}`,background:"transparent",color:C.ac,cursor:"pointer",fontSize:isMobile?14:12,transition:"all 0.15s",marginBottom:5}}
                           onMouseEnter={e=>{e.currentTarget.style.borderColor=C.ac;e.currentTarget.style.background=C.ac+"10";}}
                           onMouseLeave={e=>{e.currentTarget.style.borderColor=C.bd;e.currentTarget.style.background="transparent";}}>
                           + Add visit
                         </button>
                         <div style={{fontSize:10,color:slots>=maxPD?C.rd:C.mu,textAlign:"right"}}>
                           {slots}/{maxPD} slots{slots>maxPD&&" ⚠️"}
+                          {orderMap[key]&&<span style={{color:"#6366f1",marginLeft:6,cursor:"pointer",textDecoration:"underline"}} onClick={()=>clearOrder(key)}>reset order</span>}
                           {hasOv&&<span style={{color:C.am,marginLeft:6,cursor:"pointer",textDecoration:"underline"}} onClick={()=>clearDayOv(key)}>clear edits</span>}
                         </div>
                       </div>
@@ -654,7 +781,7 @@ function App(){
         {view==="clients"&&sched&&(
           <div>
             <input style={{...inp,maxWidth:380,marginBottom:16}} placeholder="Search client, banner, city…" value={sq} onChange={e=>setSq(e.target.value)}/>
-            <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:12,overflow:"auto"}}>
+            <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:12,overflow:"auto",WebkitOverflowScrolling:"touch"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
                 <thead><tr>{["Client","Banner","City","Prix Net","Frequency","Visits 2026","Days",""].map(h=>(
                   <th key={h} style={{padding:"10px 12px",textAlign:"left",color:C.mu,fontWeight:600,fontSize:11,textTransform:"uppercase",letterSpacing:"0.5px",borderBottom:`1px solid ${C.bd}`,whiteSpace:"nowrap"}}>{h}</th>
@@ -695,7 +822,7 @@ function App(){
 
         {/* ── RULES ── */}
         {view==="rules"&&(
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
+          <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"1fr 1fr",gap:isMobile?12:20}}>
             <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:12,padding:"20px 24px"}}>
               <div style={{fontSize:14,fontWeight:700,color:C.tx,marginBottom:14}}>🟠 Walmart Day Assignments</div>
               {Object.entries(wmDays).map(([store,day])=>(
@@ -766,8 +893,8 @@ function App(){
 
       {/* ══ ADD VISIT MODAL ══ */}
       {modal?.type==="addVisit"&&(
-        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setModal(null)}>
-          <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:14,padding:28,width:520,maxHeight:"88vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",zIndex:300,display:"flex",alignItems:isMobile?"flex-end":"center",justifyContent:"center"}} onClick={()=>setModal(null)}>
+          <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:isMobile?0:14,padding:isMobile?20:28,width:isMobile?"100%":520,maxHeight:isMobile?"100dvh":"88vh",height:isMobile?"100dvh":"auto",overflowY:"auto",display:"flex",flexDirection:"column"}} onClick={e=>e.stopPropagation()}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18}}>
               <div>
                 <div style={{fontSize:17,fontWeight:700,color:C.gn}}>+ Add a Visit</div>
@@ -792,8 +919,8 @@ function App(){
       {modal?.type==="swapVisit"&&(()=>{
         const old=cm[modal.oldId];
         return(
-          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setModal(null)}>
-            <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:14,padding:28,width:520,maxHeight:"88vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",zIndex:300,display:"flex",alignItems:isMobile?"flex-end":"center",justifyContent:"center"}} onClick={()=>setModal(null)}>
+            <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:isMobile?0:14,padding:isMobile?20:28,width:isMobile?"100%":520,maxHeight:isMobile?"100dvh":"88vh",height:isMobile?"100dvh":"auto",overflowY:"auto",display:"flex",flexDirection:"column"}} onClick={e=>e.stopPropagation()}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
                 <div>
                   <div style={{fontSize:17,fontWeight:700,color:C.am}}>⇄ Swap Visit</div>
@@ -824,8 +951,8 @@ function App(){
 
       {/* ══ EDIT CLIENT MODAL ══ */}
       {modal?.type==="editClient"&&(
-        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setModal(null)}>
-          <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:14,padding:28,width:460}} onClick={e=>e.stopPropagation()}>
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",zIndex:300,display:"flex",alignItems:isMobile?"flex-end":"center",justifyContent:"center"}} onClick={()=>setModal(null)}>
+          <div style={{background:C.s1,border:`1px solid ${C.bd}`,borderRadius:isMobile?0:14,padding:isMobile?20:28,width:isMobile?"100%":460,maxHeight:isMobile?"100dvh":"88vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
               <div>
                 <div style={{fontSize:15,fontWeight:700,color:C.tx}}>{modal.client.n}</div>
